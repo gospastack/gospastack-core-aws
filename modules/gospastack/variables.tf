@@ -12,3 +12,8 @@ variable "environment" {
     type = string
     description = "Name of the deployment environment"
 }
+
+variable "domain" {
+    type = string
+    description = "Domain name to host the application"
+}

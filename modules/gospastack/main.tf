@@ -22,9 +22,12 @@ resource "aws_s3_bucket" "b" {
   }
 }
 
-resource "aws_s3_bucket_acl" "b_acl" {
-  bucket = aws_s3_bucket.b.id
-  acl    = "private"
+resource "aws_s3_bucket" "logs" {
+  bucket = "${var.application_name}-logs-${var.environment}-${data.aws_caller_identity.current.account_id}"
+
+  tags = {
+    Name = "${var.application_name} - Logs - ${var.environment}- Deployment bucket"
+  }
 }
 
 locals {
@@ -51,13 +54,13 @@ resource "aws_cloudfront_distribution" "s3_distribution" {
   comment             = "Distribution for delivering compiled angular app via S3"
   default_root_object = "index.html"
 
-  logging_config {
-    include_cookies = false
-    bucket          = "mylogs.s3.amazonaws.com"
-    prefix          = "myprefix"
-  }
+  #logging_config {
+  #  include_cookies = false
+  #  bucket          = aws_s3_bucket.logs.id
+  #  prefix          = "logs"
+  #}
 
-  aliases = ["mysite.example.com", "yoursite.example.com"]
+  aliases = []
 
   default_cache_behavior {
     allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
@@ -138,5 +141,21 @@ resource "aws_cloudfront_distribution" "s3_distribution" {
 
   viewer_certificate {
     cloudfront_default_certificate = true
+  }
+}
+
+resource "aws_route53_zone" "main" {
+  name = "${var.domain}"
+}
+
+resource "aws_route53_record" "root_domain" {
+  zone_id = "${aws_route53_zone.main.zone_id}"
+  name = "${var.domain}"
+  type = "A"
+
+  alias {
+    name = "${aws_cloudfront_distribution.s3_distribution.domain_name}"
+    zone_id = "${aws_cloudfront_distribution.s3_distribution.hosted_zone_id}"
+    evaluate_target_health = false
   }
 }

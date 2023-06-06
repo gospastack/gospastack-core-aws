@@ -5,11 +5,13 @@ provider "aws" {
 module "gospastack" {
     source = "../modules/gospastack"
 
-    application_name = "CloudfrontExample"
+    application_name = "cloudfrontexample"
 
     price_class = "100"
 
     environment = "prod"
+
+    domain = "gospastack-example.com"
 
 }
 
