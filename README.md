@@ -19,3 +19,10 @@ Future additions:
 * AWS Elasticache
 * Including edge locations
 
+### Running the example
+```
+cd example
+terraform init
+terraform plan
+terraform apply
+```
