@@ -19,3 +19,9 @@
 
 # Go workspace file
 go.work
+example/.terraform/modules/modules.json
+example/.terraform/providers/registry.terraform.io/hashicorp/aws/4.67.0/linux_amd64/terraform-provider-aws_v4.67.0_x5
+example/.terraform.lock.hcl
+example/.terraform/**/*
+example/terraform.tfstate
+example/terraform.tfstate.backup
