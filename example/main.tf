@@ -13,5 +13,7 @@ module "gospastack" {
 
     domain = "gospastack-example.com"
 
+    file_path = "./app/"
+
 }
 

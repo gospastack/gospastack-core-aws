@@ -17,3 +17,8 @@ variable "domain" {
     type = string
     description = "Domain name to host the application"
 }
+
+variable "file_path" {
+    type = string
+    description = "Local path to html file for SPA"
+}
