@@ -12,18 +12,54 @@ terraform {
 # Get info for aws account
 data "aws_caller_identity" "current" {}
 
-# Cloudfront Distribution
+provider "aws" {
+  region = "us-east-1"
+  alias  = "aws_cloudfront"
+}
 
-resource "aws_s3_bucket" "b" {
-  bucket = "${var.application_name}-${var.environment}-${data.aws_caller_identity.current.account_id}"
+locals {
+  default_certs = var.environment != "prod" ? ["default"] : []
+  acm_certs     = var.environment != "prod" ? [] : ["acm"]
+  do_in_prod = var.environment != "prod" ? 0 : 1
+  bucket_name = "${var.application_name}-${var.environment}-${data.aws_caller_identity.current.account_id}"
+}
 
-  tags = {
-    Name = "${var.application_name} - ${var.environment}- Deployment bucket"
+data "aws_iam_policy_document" "s3_bucket_policy" {
+  statement {
+    sid = "1"
+
+    actions = [
+      "s3:GetObject",
+    ]
+
+    resources = [
+      "arn:aws:s3:::${var.domain}/*",
+    ]
+
+    principals {
+      type = "AWS"
+
+      identifiers = [
+        aws_cloudfront_origin_access_identity.origin_access_identity.iam_arn,
+      ]
+    }
   }
 }
 
-resource "aws_s3_bucket_website_configuration" "website_config" {
-  bucket = aws_s3_bucket.b.id
+resource "aws_s3_bucket" "s3_bucket" {
+  bucket = var.environment != "prod" ? local.bucket_name : var.domain
+  tags   = var.tags
+}
+
+resource "aws_s3_bucket_policy" "s3_bucket_policy" {
+  bucket = aws_s3_bucket.s3_bucket.id
+  policy = data.aws_iam_policy_document.s3_bucket_policy.json
+
+}
+
+resource "aws_s3_bucket_website_configuration" "s3_bucket" {
+  bucket = aws_s3_bucket.s3_bucket.id
+
   index_document {
     suffix = "index.html"
   }
@@ -33,84 +69,94 @@ resource "aws_s3_bucket_website_configuration" "website_config" {
   }
 }
 
-resource "aws_s3_bucket" "logs" {
-  bucket = "${var.application_name}-logs-${var.environment}-${data.aws_caller_identity.current.account_id}"
+#resource "aws_s3_bucket_acl" "s3_bucket" {
+#  bucket = aws_s3_bucket.s3_bucket.id
+#  acl    = "private"
+#}
 
-  tags = {
-    Name = "${var.application_name} - Logs - ${var.environment}- Deployment bucket"
+resource "aws_s3_bucket_versioning" "s3_bucket" {
+  bucket = aws_s3_bucket.s3_bucket.id
+  versioning_configuration {
+    status = "Enabled"
   }
 }
 
-data "aws_iam_policy_document" "allow_access_to_s3" {
-  statement {
-    sid = "AllowCloudFrontServicePrincipalRead"
-    principals {
-      type        = "Service"
-      identifiers = ["cloudfront.amazonaws.com"]
-    }
-    actions = [
-      "s3:GetObject",
-    ]
-    resources = [
-      "${aws_s3_bucket.b.arn}/*",
-    ]
+resource "aws_s3_object" "object" {
+  bucket       = aws_s3_bucket.s3_bucket.bucket
+  key          = "index.html"
+  source       = "${var.file_path}/index.html"
+  content_type = "text/html"
+  etag         = filemd5("${var.file_path}/index.html")
+}
 
-    condition {
-      test     = "StringLike"
-      variable = "AWS:SourceArn"
+resource "aws_s3_object" "errorobject" {
+  bucket       = aws_s3_bucket.s3_bucket.bucket
+  key          = "error.html"
+  source       = "${var.file_path}/error.html"
+  content_type = "text/html"
+  etag         = filemd5("${var.file_path}/error.html")
+}
 
-      values = [
-        aws_cloudfront_distribution.s3_distribution.arn
-      ]
-    }
-  }
+# Only do this in production
+data "aws_route53_zone" "domain_name" {
+  count        = local.do_in_prod
+  name         = var.domain
+  private_zone = false
+}
 
+
+### ROUTE53 ###
+
+resource "aws_route53_record" "route53_record" {
+  count      = local.do_in_prod
   depends_on = [
-    aws_s3_bucket.b
+    aws_cloudfront_distribution.s3_distribution
   ]
-}
 
-resource "aws_s3_bucket_policy" "allow_access_to_s3" {
-  bucket = aws_s3_bucket.b.id
-  policy = data.aws_iam_policy_document.allow_access_to_s3.json
-}
+  zone_id = data.aws_route53_zone.domain_name[0].zone_id
+  name    = var.domain
+  type    = "A"
 
-locals {
-  s3_origin_id = "${var.application_name}-${var.environment}-OriginId"
-}
+  alias {
+    name    = aws_cloudfront_distribution.s3_distribution.domain_name
+    zone_id = "Z2FDTNDATAQYW2"
 
-resource "aws_cloudfront_origin_access_control" "for_s3" {
-  name                              = "cloudfront-origin-access-control-s3-${var.environment}"
-  description                       = "Origin access control Policy"
-  origin_access_control_origin_type = "s3"
-  signing_behavior                  = "always"
-  signing_protocol                  = "sigv4"
+    //HardCoded value for CloudFront
+    evaluate_target_health = false
+  }
 }
 
 resource "aws_cloudfront_distribution" "s3_distribution" {
+  depends_on = [
+    aws_s3_bucket.s3_bucket
+  ]
+
   origin {
-    domain_name              = aws_s3_bucket.b.bucket_regional_domain_name
-    origin_access_control_id = aws_cloudfront_origin_access_control.for_s3.id
-    origin_id                = local.s3_origin_id
+    domain_name = aws_s3_bucket.s3_bucket.bucket_regional_domain_name
+    origin_id   = "s3-cloudfront"
+
+    s3_origin_config {
+      origin_access_identity = aws_cloudfront_origin_access_identity.origin_access_identity.cloudfront_access_identity_path
+    }
   }
 
   enabled             = true
   is_ipv6_enabled     = true
-  comment             = "Distribution for delivering compiled angular app via S3"
   default_root_object = "index.html"
-
-  #logging_config {
-  #  include_cookies = false
-  #  bucket          = aws_s3_bucket.logs.id
-  #  prefix          = "logs"
-  #}
-
   aliases = [var.domain]
 
   default_cache_behavior {
-    allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
-    cached_methods   = ["GET", "HEAD"]
-    target_origin_id = local.s3_origin_id
+    allowed_methods = [
+      "GET",
+      "HEAD",
+    ]
+
+    cached_methods = [
+      "GET",
+      "HEAD",
+    ]
+
+    target_origin_id = "s3-cloudfront"
 
     forwarded_values {
       query_string = false
@@ -120,129 +166,62 @@ resource "aws_cloudfront_distribution" "s3_distribution" {
       }
     }
 
-    viewer_protocol_policy = "allow-all"
-    min_ttl                = 0
-    default_ttl            = 3600
-    max_ttl                = 86400
-  }
-
-  # Cache behavior with precedence 0
-  ordered_cache_behavior {
-    path_pattern     = "/content/immutable/*"
-    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
-    cached_methods   = ["GET", "HEAD", "OPTIONS"]
-    target_origin_id = local.s3_origin_id
-
-    forwarded_values {
-      query_string = false
-      headers      = ["Origin"]
-
-      cookies {
-        forward = "none"
-      }
-    }
-
-    min_ttl                = 0
-    default_ttl            = 86400
-    max_ttl                = 31536000
-    compress               = true
     viewer_protocol_policy = "redirect-to-https"
+
+    # https://stackoverflow.com/questions/67845341/cloudfront-s3-etag-possible-for-cloudfront-to-send-updated-s3-object-before-t
+    min_ttl     = var.cloudfront_min_ttl
+    default_ttl = var.cloudfront_default_ttl
+    max_ttl     = var.cloudfront_max_ttl
   }
 
-  # Cache behavior with precedence 1
-  ordered_cache_behavior {
-    path_pattern     = "/content/*"
-    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
-    cached_methods   = ["GET", "HEAD"]
-    target_origin_id = local.s3_origin_id
-
-    forwarded_values {
-      query_string = false
-
-      cookies {
-        forward = "none"
-      }
-    }
-
-    min_ttl                = 0
-    default_ttl            = 3600
-    max_ttl                = 86400
-    compress               = true
-    viewer_protocol_policy = "redirect-to-https"
-  }
-
-  price_class = "PriceClass_${var.price_class}"
+  price_class = var.price_class
 
   restrictions {
     geo_restriction {
-      restriction_type = "none"
+      restriction_type = var.cloudfront_geo_restriction_restriction_type
+      locations = []
     }
   }
 
-  tags = {
-    Environment = var.environment
+  dynamic "viewer_certificate" {
+    for_each = local.default_certs
+    content {
+      cloudfront_default_certificate = true
+    }
   }
 
-  viewer_certificate {
-    acm_certificate_arn      = aws_acm_certificate_validation.cert_validation.certificate_arn
-    ssl_support_method       = "sni-only"
-    minimum_protocol_version = "TLSv1.1_2016"
+  dynamic "viewer_certificate" {
+    for_each = local.acm_certs
+    content {
+      acm_certificate_arn      = aws_acm_certificate.ssl_certificate[0].arn
+      ssl_support_method       = "sni-only"
+      minimum_protocol_version = "TLSv1"
+    }
   }
-  
+
+  custom_error_response {
+    error_code            = 403
+    response_code         = 200
+    error_caching_min_ttl = 0
+    response_page_path    = "/index.html"
+  }
+
+  wait_for_deployment = false
+  tags                = var.tags
+}
+
+resource "aws_cloudfront_origin_access_identity" "origin_access_identity" {
+  comment = "access-identity-${var.domain}.s3.amazonaws.com"
 }
 
 resource "aws_route53_zone" "main" {
   name = "${var.domain}"
 }
 
-resource "aws_route53_record" "root_domain" {
-  zone_id = "${aws_route53_zone.main.zone_id}"
-  name = "${var.domain}"
-  type = "A"
-
-  alias {
-    name = "${aws_cloudfront_distribution.s3_distribution.domain_name}"
-    zone_id = "${aws_cloudfront_distribution.s3_distribution.hosted_zone_id}"
-    evaluate_target_health = false
-  }
-}
-
-resource "aws_route53_record" "www_domain" {
-  zone_id = "${aws_route53_zone.main.zone_id}"
-  name = "www.${var.domain}"
-  type = "A"
-
-  alias {
-    name = "${aws_cloudfront_distribution.s3_distribution.domain_name}"
-    zone_id = "${aws_cloudfront_distribution.s3_distribution.hosted_zone_id}"
-    evaluate_target_health = false
-  }
-}
-
-resource "aws_s3_object" "spa_file" {
-  bucket = aws_s3_bucket.b.id
-  key    = "index.html"
-  source = "${var.file_path}/index.html"
-  etag = filemd5("${var.file_path}/index.html")
-}
-
-resource "aws_s3_object" "spa_file_404" {
-  bucket = aws_s3_bucket.b.id
-  key    = "404.html"
-  source = "${var.file_path}/error.html"
-
-  etag = filemd5("${var.file_path}/error.html")
-}
-
-
-provider "aws" {
-  alias  = "acm_provider"
-  region = "us-east-1"
-}
-
 # SSL Certificate
 resource "aws_acm_certificate" "ssl_certificate" {
-  provider                  = aws.acm_provider
+  count                     = local.do_in_prod
+  provider                  = aws.aws_cloudfront
   domain_name               = var.domain
   subject_alternative_names = ["*.${var.domain}"]
   validation_method         = "EMAIL"
@@ -257,7 +236,7 @@ resource "aws_acm_certificate" "ssl_certificate" {
 
 # Uncomment the validation_record_fqdns line if you do DNS validation instead of Email.
 resource "aws_acm_certificate_validation" "cert_validation" {
-  provider        = aws.acm_provider
-  certificate_arn = aws_acm_certificate.ssl_certificate.arn
+  provider        = aws.aws_cloudfront
+  certificate_arn = aws_acm_certificate.ssl_certificate[0].arn
   #validation_record_fqdns = [for record in aws_route53_record.root_domain : record.fqdn]
 }

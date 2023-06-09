@@ -20,6 +20,13 @@ Future additions:
 * Including edge locations
 
 ### Running the example
+
+Pre-requisites
+* Already registered domain name
+* Update domain name in example/main.tf
+
+Note: "prod" is a reserved word for the variable "environment". Only in that environment is the custom domain applied
+
 ```
 cd example
 terraform init

@@ -25,3 +25,4 @@ example/.terraform.lock.hcl
 example/.terraform/**/*
 example/terraform.tfstate
 example/terraform.tfstate.backup
+example/.terraform.tfstate.lock.info
